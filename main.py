@@ -10,15 +10,14 @@ from scheduler import start_scheduler, save_scheduled_posts, load_scheduled_post
 import datetime
 import json
 
-# إعداد البوت
+# إعداد البوت وFlask
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# تأكد من وجود مجلد البيانات
+# إعداد مجلدات التخزين
 os.makedirs(DATA_FOLDER, exist_ok=True)
 PHOTOS_PATH = os.path.join(DATA_FOLDER, "photos")
 os.makedirs(PHOTOS_PATH, exist_ok=True)
-
 TEXT_FILE = os.path.join(DATA_FOLDER, "text.txt")
 
 # تحميل النص من الملف
@@ -35,11 +34,16 @@ def webhook():
     bot.process_new_updates([update])
     return "OK", 200
 
-# تحميل الصور السابقة (للمقارنة)
+# أمر /start
+@bot.message_handler(commands=['start'])
+def start_message(message):
+    bot.send_message(message.chat.id, "👋 مرحبًا بك!\nأرسل صورة مع كلمة 'نسخة' وسأجهزها للنشر.\nأو استخدم /admin للدخول إلى لوحة التحكم.")
+
+# تحميل الصور الحالية للمقارنة
 def get_existing_photos():
     return [os.path.join(PHOTOS_PATH, f) for f in os.listdir(PHOTOS_PATH) if f.endswith(".jpg")]
 
-# تخزين صورة جديدة
+# حفظ صورة مرسلة
 def save_new_photo(file_id):
     file_info = bot.get_file(file_id)
     downloaded_file = bot.download_file(file_info.file_path)
@@ -55,7 +59,7 @@ def handle_photo(message):
     file_id = message.photo[-1].file_id
     new_photo_path = save_new_photo(file_id)
 
-    # إذا الصورة مكررة → نحذفها
+    # حذف إذا كانت الصورة مكررة
     if "نسخة" not in caption:
         for existing_path in get_existing_photos():
             if are_images_similar(existing_path, new_photo_path):
@@ -63,7 +67,7 @@ def handle_photo(message):
                 return
         return
 
-    # صورة مع كلمة "نسخة"
+    # صورة مرفقة بكلمة "نسخة" - أضف النص
     final_path = new_photo_path.replace(".jpg", "_edited.jpg")
     write_text_on_image(new_photo_path, load_text(), final_path)
 
@@ -75,17 +79,17 @@ def handle_photo(message):
     )
     bot.reply_to(message, "📸 تم تجهيز الصورة.\nمتى تريد نشرها؟", reply_markup=markup)
 
-# نشر الآن
+# نشر الصورة فورًا
 @bot.callback_query_handler(func=lambda call: call.data.startswith("publish_now"))
 def publish_now(call):
     _, path = call.data.split("|")
     try:
         bot.send_photo(CHANNEL_USERNAME, open(path, "rb"))
         bot.answer_callback_query(call.id, "✅ تم النشر الآن")
-    except Exception as e:
+    except:
         bot.answer_callback_query(call.id, "❌ فشل في النشر")
 
-# جدولة نشر صباحًا/مساءً
+# جدولة صورة
 @bot.callback_query_handler(func=lambda call: call.data.startswith("schedule_"))
 def schedule_later(call):
     _, time_type, path = call.data.split("|")
@@ -103,7 +107,7 @@ def admin_panel(message):
     markup.add("✏️ تعديل النص")
     bot.send_message(message.chat.id, "🎛️ لوحة التحكم", reply_markup=markup)
 
-# تعديل النص
+# تعديل النص على الصور
 @bot.message_handler(func=lambda m: m.text == "✏️ تعديل النص")
 def ask_new_text(message):
     if message.from_user.id not in ADMIN_IDS:
@@ -118,7 +122,7 @@ def save_new_text(message):
         f.write(message.text.strip())
     bot.send_message(message.chat.id, "✅ تم حفظ النص الجديد.")
 
-# إعداد Webhook وتشغيل الجدولة
+# تشغيل Webhook وتشغيل الجدولة
 bot.remove_webhook()
 bot.set_webhook(url=WEBHOOK_URL)
 start_scheduler()
