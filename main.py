@@ -6,6 +6,7 @@ from telebot import types
 from flask import Flask, request
 from config import TOKEN, WEBHOOK_URL, ADMIN_IDS, CHANNEL_USERNAME, DEFAULT_TEXT, DATA_FOLDER
 from image_utils import are_images_similar, write_text_on_image
+from scheduler import start_scheduler, save_scheduled_posts, load_scheduled_posts
 import datetime
 import json
 
@@ -17,6 +18,22 @@ app = Flask(__name__)
 os.makedirs(DATA_FOLDER, exist_ok=True)
 PHOTOS_PATH = os.path.join(DATA_FOLDER, "photos")
 os.makedirs(PHOTOS_PATH, exist_ok=True)
+
+TEXT_FILE = os.path.join(DATA_FOLDER, "text.txt")
+
+# تحميل النص من الملف
+def load_text():
+    if os.path.exists(TEXT_FILE):
+        with open(TEXT_FILE, "r", encoding='utf-8') as f:
+            return f.read()
+    return DEFAULT_TEXT
+
+# استقبال التحديثات من تيليجرام عبر Webhook
+@app.route("/", methods=["POST"])
+def webhook():
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
+    bot.process_new_updates([update])
+    return "OK", 200
 
 # تحميل الصور السابقة (للمقارنة)
 def get_existing_photos():
@@ -31,59 +48,51 @@ def save_new_photo(file_id):
         f.write(downloaded_file)
     return file_path
 
-# استقبال التحديثات من تيليجرام عبر Webhook
-@app.route("/", methods=["POST"])
-def webhook():
-    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
-    bot.process_new_updates([update])
-    return "OK", 200
-
-# عند استقبال صورة
+# استقبال الصور
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    if not message.caption or "نسخة" not in message.caption:
-        # مقارنة الصور المتشابهة
-        file_id = message.photo[-1].file_id
-        new_photo_path = save_new_photo(file_id)
+    caption = message.caption or ""
+    file_id = message.photo[-1].file_id
+    new_photo_path = save_new_photo(file_id)
 
+    # إذا الصورة مكررة → نحذفها
+    if "نسخة" not in caption:
         for existing_path in get_existing_photos():
             if are_images_similar(existing_path, new_photo_path):
-                try:
-                    os.remove(new_photo_path)
-                    return  # لا تنشرها لأنها مكررة
-                except:
-                    pass
-        return  # انتهى من التحقق من التكرار فقط
+                os.remove(new_photo_path)
+                return
+        return
 
-    # صورة مع "نسخة" — اكتب النص عليها
-    file_id = message.photo[-1].file_id
-    original_path = save_new_photo(file_id)
-    output_path = original_path.replace(".jpg", "_edited.jpg")
-    write_text_on_image(original_path, DEFAULT_TEXT, output_path)
+    # صورة مع كلمة "نسخة"
+    final_path = new_photo_path.replace(".jpg", "_edited.jpg")
+    write_text_on_image(new_photo_path, load_text(), final_path)
 
-    # إرسال أزرار النشر
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton("✅ نشر الآن", callback_data=f"publish_now|{output_path}"),
-        types.InlineKeyboardButton("🕒 صباحًا", callback_data=f"schedule_morning|{output_path}"),
-        types.InlineKeyboardButton("🌙 مساءً", callback_data=f"schedule_evening|{output_path}")
+        types.InlineKeyboardButton("✅ نشر الآن", callback_data=f"publish_now|{final_path}"),
+        types.InlineKeyboardButton("🕒 صباحًا", callback_data=f"schedule_morning|{final_path}"),
+        types.InlineKeyboardButton("🌙 مساءً", callback_data=f"schedule_evening|{final_path}")
     )
     bot.reply_to(message, "📸 تم تجهيز الصورة.\nمتى تريد نشرها؟", reply_markup=markup)
 
-# نشر الصورة الآن
+# نشر الآن
 @bot.callback_query_handler(func=lambda call: call.data.startswith("publish_now"))
 def publish_now(call):
     _, path = call.data.split("|")
-    bot.send_photo(CHANNEL_USERNAME, open(path, "rb"))
-    bot.answer_callback_query(call.id, "✅ تم النشر الآن")
+    try:
+        bot.send_photo(CHANNEL_USERNAME, open(path, "rb"))
+        bot.answer_callback_query(call.id, "✅ تم النشر الآن")
+    except Exception as e:
+        bot.answer_callback_query(call.id, "❌ فشل في النشر")
 
-# جدولة صباحية / مسائية (مؤقتًا فقط كعرض)
+# جدولة نشر صباحًا/مساءً
 @bot.callback_query_handler(func=lambda call: call.data.startswith("schedule_"))
 def schedule_later(call):
     _, time_type, path = call.data.split("|")
-    # ملاحظة: هنا فقط عرض كتنبيه، لاحقًا سيتم تنفيذ الجدولة بملف مستقل
-    bot.answer_callback_query(call.id, f"📅 تم جدولة النشر ({'صباحًا' if time_type=='morning' else 'مساءً'})")
-    # لاحقًا: نسجلها في ملف JSON للجدولة الحقيقية
+    data = load_scheduled_posts()
+    data.append({"time": time_type, "path": path})
+    save_scheduled_posts(data)
+    bot.answer_callback_query(call.id, f"📅 تم جدولة النشر ({'صباحًا' if time_type == 'morning' else 'مساءً'})")
 
 # لوحة تحكم الأدمن
 @bot.message_handler(commands=['admin'])
@@ -105,18 +114,11 @@ def ask_new_text(message):
 def save_new_text(message):
     if message.from_user.id not in ADMIN_IDS:
         return
-    with open(os.path.join(DATA_FOLDER, "text.txt"), "w", encoding='utf-8') as f:
+    with open(TEXT_FILE, "w", encoding='utf-8') as f:
         f.write(message.text.strip())
-    bot.send_message(message.chat.id, "✅ تم حفظ النص الجديد بنجاح.")
+    bot.send_message(message.chat.id, "✅ تم حفظ النص الجديد.")
 
-# تحميل النص من الملف
-def load_text():
-    path = os.path.join(DATA_FOLDER, "text.txt")
-    if os.path.exists(path):
-        with open(path, "r", encoding='utf-8') as f:
-            return f.read()
-    return DEFAULT_TEXT
-
-# عند بدء التشغيل
+# إعداد Webhook وتشغيل الجدولة
 bot.remove_webhook()
 bot.set_webhook(url=WEBHOOK_URL)
+start_scheduler()
