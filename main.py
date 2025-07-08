@@ -1,121 +1,122 @@
-from flask import Flask, request
-import telebot
+# main.py
+
 import os
+import telebot
+from telebot import types
+from flask import Flask, request
+from config import TOKEN, WEBHOOK_URL, ADMIN_IDS, CHANNEL_USERNAME, DEFAULT_TEXT, DATA_FOLDER
+from image_utils import are_images_similar, write_text_on_image
+import datetime
+import json
 
-API_TOKEN = "7837218696:AAGSozPdf3hLT0bBjrgB3uExeuir-90Rvok"
-CHANNEL_USERNAME = "@MARK01i"
-ADMIN_ID = 7758666677
-
-bot = telebot.TeleBot(API_TOKEN)
+# إعداد البوت
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
-user_data = {}
 
-# تحقق من الاشتراك في القناة
-def is_user_subscribed(user_id):
-    try:
-        status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
-        return status in ['member', 'administrator', 'creator']
-    except:
-        return False
+# تأكد من وجود مجلد البيانات
+os.makedirs(DATA_FOLDER, exist_ok=True)
+PHOTOS_PATH = os.path.join(DATA_FOLDER, "photos")
+os.makedirs(PHOTOS_PATH, exist_ok=True)
 
-# بدء البوت
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_id = message.from_user.id
-    if not is_user_subscribed(user_id):
-        bot.send_message(user_id, f"🚫 يجب الاشتراك في القناة أولًا: {CHANNEL_USERNAME}")
-        return
-    user_data[user_id] = {}
-    bot.send_message(user_id, "📸 أرسل صورة الحساب الذي تريد عرضه للبيع:")
+# تحميل الصور السابقة (للمقارنة)
+def get_existing_photos():
+    return [os.path.join(PHOTOS_PATH, f) for f in os.listdir(PHOTOS_PATH) if f.endswith(".jpg")]
 
-# استقبال الصورة
-@bot.message_handler(content_types=['photo'])
-def get_photo(message):
-    user_id = message.from_user.id
-    if user_id not in user_data:
-        return
-    file_id = message.photo[-1].file_id
-    user_data[user_id]['photo'] = file_id
-    bot.send_message(user_id, "✍️ اكتب وصف الحساب:")
+# تخزين صورة جديدة
+def save_new_photo(file_id):
+    file_info = bot.get_file(file_id)
+    downloaded_file = bot.download_file(file_info.file_path)
+    file_path = os.path.join(PHOTOS_PATH, f"{file_id}.jpg")
+    with open(file_path, 'wb') as f:
+        f.write(downloaded_file)
+    return file_path
 
-# استقبال النصوص (الوصف، النوع، السعر)
-@bot.message_handler(func=lambda m: True)
-def get_text(message):
-    user_id = message.from_user.id
-    if user_id not in user_data:
-        return
-
-    if 'desc' not in user_data[user_id]:
-        user_data[user_id]['desc'] = message.text
-        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        markup.add("🎮 ببجي", "🔥 فري فاير", "⚽ بيس", "🎯 أخرى")
-        bot.send_message(user_id, "🎮 اختر نوع اللعبة:", reply_markup=markup)
-
-    elif 'game' not in user_data[user_id]:
-        user_data[user_id]['game'] = message.text
-        bot.send_message(user_id, "💰 اكتب السعر المطلوب بالدولار:")
-
-    elif 'price' not in user_data[user_id]:
-        user_data[user_id]['price'] = message.text
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(telebot.types.InlineKeyboardButton("✅ إرسال الطلب", callback_data="send_request"))
-        bot.send_message(user_id, "📦 اضغط لتأكيد إرسال الطلب للأدمن.", reply_markup=markup)
-
-# عند الضغط على "إرسال الطلب"
-@bot.callback_query_handler(func=lambda call: call.data == "send_request")
-def send_to_admin(call):
-    user_id = call.from_user.id
-    data = user_data.get(user_id, {})
-    if not data:
-        return bot.send_message(user_id, "❌ حدث خطأ، حاول من جديد.")
-
-    caption = f"""
-🆕 طلب بيع حساب جديد
-
-🎮 اللعبة: {data['game']}
-📝 الوصف: {data['desc']}
-💰 السعر: {data['price']}$
-
-👤 البائع: @{call.from_user.username or 'بدون يوزر'}
-🆔 ID: {user_id}
-"""
-
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(
-        telebot.types.InlineKeyboardButton("✅ قبول", callback_data=f"accept_{user_id}"),
-        telebot.types.InlineKeyboardButton("❌ رفض", callback_data=f"reject_{user_id}")
-    )
-    bot.send_photo(ADMIN_ID, data['photo'], caption=caption, reply_markup=markup)
-    bot.send_message(user_id, "📨 تم إرسال الطلب للإدارة، سيتم الرد عليك قريبًا.")
-    del user_data[user_id]
-
-# الموافقة والرفض
-@bot.callback_query_handler(func=lambda call: call.data.startswith("accept_") or call.data.startswith("reject_"))
-def handle_admin_action(call):
-    parts = call.data.split("_")
-    action, user_id = parts[0], int(parts[1])
-    message = call.message
-
-    if action == "accept":
-        caption = message.caption + "\n\n📌 لشراء الحساب تواصل مع البائع 👆"
-        bot.send_photo(CHANNEL_USERNAME, message.photo[-1].file_id, caption=caption)
-        bot.send_message(user_id, "✅ تم قبول عرض حسابك ونُشر في القناة!")
-    else:
-        bot.send_message(user_id, "❌ تم رفض عرض الحساب من قبل الإدارة.")
-
-    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-
-# إعداد Webhook
-@app.route('/', methods=['POST'])
+# استقبال التحديثات من تيليجرام عبر Webhook
+@app.route("/", methods=["POST"])
 def webhook():
-    json_data = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_data)
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
     bot.process_new_updates([update])
-    return "ok", 200
+    return "OK", 200
 
-@app.route('/')
-def home():
-    return "Bot is running.", 200
+# عند استقبال صورة
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    if not message.caption or "نسخة" not in message.caption:
+        # مقارنة الصور المتشابهة
+        file_id = message.photo[-1].file_id
+        new_photo_path = save_new_photo(file_id)
 
-if __name__ == "__main__":
-    app.run(debug=True)
+        for existing_path in get_existing_photos():
+            if are_images_similar(existing_path, new_photo_path):
+                try:
+                    os.remove(new_photo_path)
+                    return  # لا تنشرها لأنها مكررة
+                except:
+                    pass
+        return  # انتهى من التحقق من التكرار فقط
+
+    # صورة مع "نسخة" — اكتب النص عليها
+    file_id = message.photo[-1].file_id
+    original_path = save_new_photo(file_id)
+    output_path = original_path.replace(".jpg", "_edited.jpg")
+    write_text_on_image(original_path, DEFAULT_TEXT, output_path)
+
+    # إرسال أزرار النشر
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("✅ نشر الآن", callback_data=f"publish_now|{output_path}"),
+        types.InlineKeyboardButton("🕒 صباحًا", callback_data=f"schedule_morning|{output_path}"),
+        types.InlineKeyboardButton("🌙 مساءً", callback_data=f"schedule_evening|{output_path}")
+    )
+    bot.reply_to(message, "📸 تم تجهيز الصورة.\nمتى تريد نشرها؟", reply_markup=markup)
+
+# نشر الصورة الآن
+@bot.callback_query_handler(func=lambda call: call.data.startswith("publish_now"))
+def publish_now(call):
+    _, path = call.data.split("|")
+    bot.send_photo(CHANNEL_USERNAME, open(path, "rb"))
+    bot.answer_callback_query(call.id, "✅ تم النشر الآن")
+
+# جدولة صباحية / مسائية (مؤقتًا فقط كعرض)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("schedule_"))
+def schedule_later(call):
+    _, time_type, path = call.data.split("|")
+    # ملاحظة: هنا فقط عرض كتنبيه، لاحقًا سيتم تنفيذ الجدولة بملف مستقل
+    bot.answer_callback_query(call.id, f"📅 تم جدولة النشر ({'صباحًا' if time_type=='morning' else 'مساءً'})")
+    # لاحقًا: نسجلها في ملف JSON للجدولة الحقيقية
+
+# لوحة تحكم الأدمن
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("✏️ تعديل النص")
+    bot.send_message(message.chat.id, "🎛️ لوحة التحكم", reply_markup=markup)
+
+# تعديل النص
+@bot.message_handler(func=lambda m: m.text == "✏️ تعديل النص")
+def ask_new_text(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    msg = bot.send_message(message.chat.id, "📝 أرسل النص الجديد الذي تريد وضعه على الصور:")
+    bot.register_next_step_handler(msg, save_new_text)
+
+def save_new_text(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    with open(os.path.join(DATA_FOLDER, "text.txt"), "w", encoding='utf-8') as f:
+        f.write(message.text.strip())
+    bot.send_message(message.chat.id, "✅ تم حفظ النص الجديد بنجاح.")
+
+# تحميل النص من الملف
+def load_text():
+    path = os.path.join(DATA_FOLDER, "text.txt")
+    if os.path.exists(path):
+        with open(path, "r", encoding='utf-8') as f:
+            return f.read()
+    return DEFAULT_TEXT
+
+# عند بدء التشغيل
+bot.remove_webhook()
+bot.set_webhook(url=WEBHOOK_URL)
