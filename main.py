@@ -19,30 +19,29 @@ app = Flask(__name__)
 def home():
     return "✅ Bot is running", 200
 
-# ✅ استقبال Webhook من تيليجرام
+# ✅ Webhook تيليجرام
 @app.route("/", methods=["POST"])
 def webhook():
     update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
     bot.process_new_updates([update])
     return "OK", 200
 
-# 🔧 إعداد المجلدات بأمان
-PHOTOS_PATH = os.path.join(DATA_FOLDER, "photos")
+# ✅ إعداد مجلدات البيانات بأمان
 TEXT_FILE = os.path.join(DATA_FOLDER, "text.txt")
+PHOTOS_PATH = os.path.join(DATA_FOLDER, "photos")
 
 try:
-    if os.path.isfile(DATA_FOLDER):
+    if os.path.exists(DATA_FOLDER) and not os.path.isdir(DATA_FOLDER):
         os.remove(DATA_FOLDER)
-    os.makedirs(DATA_FOLDER, exist_ok=True)
-except Exception as e:
-    print(f"❌ فشل في إنشاء مجلد البيانات: {e}")
+    if not os.path.exists(DATA_FOLDER):
+        os.makedirs(DATA_FOLDER)
 
-try:
-    if os.path.isfile(PHOTOS_PATH):
+    if os.path.exists(PHOTOS_PATH) and not os.path.isdir(PHOTOS_PATH):
         os.remove(PHOTOS_PATH)
-    os.makedirs(PHOTOS_PATH, exist_ok=True)
+    if not os.path.exists(PHOTOS_PATH):
+        os.makedirs(PHOTOS_PATH)
 except Exception as e:
-    print(f"❌ فشل في إنشاء مجلد الصور: {e}")
+    print(f"❌ خطأ أثناء إعداد المجلدات: {e}")
 
 # تحميل النص الحالي
 def load_text():
@@ -51,7 +50,7 @@ def load_text():
             return f.read()
     return DEFAULT_TEXT
 
-# أمر /start
+# /start
 @bot.message_handler(commands=['start'])
 def start_message(message):
     bot.send_message(message.chat.id, "👋 مرحبًا بك!\nأرسل صورة مع كلمة 'نسخة' وسأجهزها للنشر.\nأو استخدم /admin للدخول إلى لوحة التحكم.")
@@ -60,7 +59,7 @@ def start_message(message):
 def get_existing_photos():
     return [os.path.join(PHOTOS_PATH, f) for f in os.listdir(PHOTOS_PATH) if f.endswith(".jpg")]
 
-# حفظ صورة جديدة
+# حفظ صورة
 def save_new_photo(file_id):
     file_info = bot.get_file(file_id)
     downloaded_file = bot.download_file(file_info.file_path)
@@ -69,7 +68,7 @@ def save_new_photo(file_id):
         f.write(downloaded_file)
     return file_path
 
-# معالجة الصور
+# استقبال الصور
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     caption = message.caption or ""
@@ -94,7 +93,7 @@ def handle_photo(message):
     )
     bot.reply_to(message, "📸 تم تجهيز الصورة.\nمتى تريد نشرها؟", reply_markup=markup)
 
-# نشر مباشر
+# نشر الآن
 @bot.callback_query_handler(func=lambda call: call.data.startswith("publish_now"))
 def publish_now(call):
     _, path = call.data.split("|")
@@ -104,7 +103,7 @@ def publish_now(call):
     except:
         bot.answer_callback_query(call.id, "❌ فشل في النشر")
 
-# جدولة نشر صباحًا/مساءً
+# جدولة صباحًا/مساءً
 @bot.callback_query_handler(func=lambda call: call.data.startswith("schedule_"))
 def schedule_later(call):
     _, time_type, path = call.data.split("|")
@@ -123,4 +122,24 @@ def admin_panel(message):
     bot.send_message(message.chat.id, "🎛️ لوحة التحكم", reply_markup=markup)
 
 # تعديل النص
-@bot.message_handler(func=lambda m: m.text == "✏️
+@bot.message_handler(func=lambda m: m.text == "✏️ تعديل النص")
+def ask_new_text(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    msg = bot.send_message(message.chat.id, "📝 أرسل النص الجديد الذي تريد وضعه على الصور:")
+    bot.register_next_step_handler(msg, save_new_text)
+
+def save_new_text(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    with open(TEXT_FILE, "w", encoding='utf-8') as f:
+        f.write(message.text.strip())
+    bot.send_message(message.chat.id, "✅ تم حفظ النص الجديد.")
+
+# بدء التشغيل
+bot.remove_webhook()
+bot.set_webhook(url=WEBHOOK_URL)
+start_scheduler()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
