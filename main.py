@@ -26,11 +26,23 @@ def webhook():
     bot.process_new_updates([update])
     return "OK", 200
 
-# إنشاء مجلدات البيانات
-os.makedirs(DATA_FOLDER, exist_ok=True)
+# 🔧 إعداد المجلدات بأمان
 PHOTOS_PATH = os.path.join(DATA_FOLDER, "photos")
-os.makedirs(PHOTOS_PATH, exist_ok=True)
 TEXT_FILE = os.path.join(DATA_FOLDER, "text.txt")
+
+try:
+    if os.path.isfile(DATA_FOLDER):
+        os.remove(DATA_FOLDER)
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+except Exception as e:
+    print(f"❌ فشل في إنشاء مجلد البيانات: {e}")
+
+try:
+    if os.path.isfile(PHOTOS_PATH):
+        os.remove(PHOTOS_PATH)
+    os.makedirs(PHOTOS_PATH, exist_ok=True)
+except Exception as e:
+    print(f"❌ فشل في إنشاء مجلد الصور: {e}")
 
 # تحميل النص الحالي
 def load_text():
@@ -64,7 +76,6 @@ def handle_photo(message):
     file_id = message.photo[-1].file_id
     new_photo_path = save_new_photo(file_id)
 
-    # حذف صورة مكررة
     if "نسخة" not in caption:
         for existing_path in get_existing_photos():
             if are_images_similar(existing_path, new_photo_path):
@@ -72,7 +83,6 @@ def handle_photo(message):
                 return
         return
 
-    # تجهيز الصورة للنشر
     final_path = new_photo_path.replace(".jpg", "_edited.jpg")
     write_text_on_image(new_photo_path, load_text(), final_path)
 
@@ -113,21 +123,4 @@ def admin_panel(message):
     bot.send_message(message.chat.id, "🎛️ لوحة التحكم", reply_markup=markup)
 
 # تعديل النص
-@bot.message_handler(func=lambda m: m.text == "✏️ تعديل النص")
-def ask_new_text(message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    msg = bot.send_message(message.chat.id, "📝 أرسل النص الجديد الذي تريد وضعه على الصور:")
-    bot.register_next_step_handler(msg, save_new_text)
-
-def save_new_text(message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    with open(TEXT_FILE, "w", encoding='utf-8') as f:
-        f.write(message.text.strip())
-    bot.send_message(message.chat.id, "✅ تم حفظ النص الجديد.")
-
-# تشغيل Webhook وتشغيل الجدولة
-bot.remove_webhook()
-bot.set_webhook(url=WEBHOOK_URL)
-start_scheduler()
+@bot.message_handler(func=lambda m: m.text == "✏️
